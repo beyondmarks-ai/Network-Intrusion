@@ -4,14 +4,21 @@ var messages_received = [];
 var currentPage = 1;
 
 $(document).ready(function () {
-    // Firebase configuration
-    
-    };
+    // Firebase configuration can be injected as window.firebaseConfig from template/env.
+    const firebaseConfig = window.firebaseConfig || null;
+    let db = null;
+    let auth = null;
 
-    // Initialize Firebase
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.firestore();
-    const auth = firebase.auth();
+    // Initialize Firebase only when config is available and SDK is loaded.
+    if (typeof firebase !== "undefined" && firebaseConfig && firebaseConfig.apiKey) {
+        if (!firebase.apps.length) {
+            firebase.initializeApp(firebaseConfig);
+        }
+        db = firebase.firestore();
+        auth = firebase.auth();
+    } else {
+        console.warn("Firebase config missing. Running dashboard without Firestore listeners.");
+    }
 
     // Initialize Socket.IO connection
     socket = io.connect('http://' + document.domain + ':' + location.port + '/test');
@@ -23,30 +30,32 @@ $(document).ready(function () {
 
   
 // Modified auth state handler
-auth.onAuthStateChanged(user => {
-    if (user) {
-        // User is signed in
-        console.log("User is signed in:", user.uid);
-        
-        // Check if this is a new session
-        fetch('/check-session')
-            .then(response => response.json())
-            .then(data => {
-                if (data.new_session) {
-                    // Clear any existing flows for this user
-                    clearAllFlowStorage();
-                }
-                initializeFirebaseListeners();
-            })
-            .catch(error => {
-                console.error("Error checking session:", error);
-                initializeFirebaseListeners();
-            });
-    } else {
-        // User signed out - clear flows
-        clearAllFlowStorage();
-    }
-});
+if (auth) {
+    auth.onAuthStateChanged(user => {
+        if (user) {
+            // User is signed in
+            console.log("User is signed in:", user.uid);
+
+            // Check if this is a new session
+            fetch('/check-session')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.new_session) {
+                        // Clear any existing flows for this user
+                        clearAllFlowStorage();
+                    }
+                    initializeFirebaseListeners();
+                })
+                .catch(error => {
+                    console.error("Error checking session:", error);
+                    initializeFirebaseListeners();
+                });
+        } else {
+            // User signed out - clear flows
+            clearAllFlowStorage();
+        }
+    });
+}
 
     // Function to initialize all Firebase listeners
     function initializeFirebaseListeners() {
@@ -55,23 +64,171 @@ auth.onAuthStateChanged(user => {
         setupGlobalStatsListener();
     }
 
+    const chartSubtitle = document.getElementById("chart-subtitle");
+
+    function updateChartSubtitle(text) {
+        if (chartSubtitle) {
+            chartSubtitle.textContent = text;
+        }
+    }
+
+    function getFlowTimestamp(row) {
+        const raw = row && row[6] ? String(row[6]).trim() : "";
+        const parsed = raw ? new Date(raw) : new Date();
+        return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+    }
+
+    function floorToMinute(dateObj) {
+        const d = new Date(dateObj);
+        d.setSeconds(0, 0);
+        return d;
+    }
+
+    function formatMinuteLabel(dateObj) {
+        return dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
+    function buildThreatTimeline(windowMinutes) {
+        const now = new Date();
+        const points = [];
+        const labels = [];
+        const attacks = [];
+        const benign = [];
+
+        for (let i = windowMinutes - 1; i >= 0; i--) {
+            const bucket = new Date(now.getTime() - i * 60000);
+            const floored = floorToMinute(bucket);
+            const key = floored.getTime();
+            points.push(key);
+            labels.push(formatMinuteLabel(floored));
+            attacks.push(0);
+            benign.push(0);
+        }
+
+        const indexMap = {};
+        for (let i = 0; i < points.length; i++) {
+            indexMap[points[i]] = i;
+        }
+
+        let totalAttacks = 0;
+        let totalBenign = 0;
+        for (let i = 0; i < messages_received.length; i++) {
+            const row = messages_received[i];
+            const ts = floorToMinute(getFlowTimestamp(row)).getTime();
+            const idx = indexMap[ts];
+            if (idx === undefined) continue;
+
+            const prediction = row && row[row.length - 3] ? String(row[row.length - 3]) : "Unknown";
+            const isAttack = prediction.toLowerCase() !== "benign";
+            if (isAttack) {
+                attacks[idx] += 1;
+                totalAttacks += 1;
+            } else {
+                benign[idx] += 1;
+                totalBenign += 1;
+            }
+        }
+
+        return {
+            labels,
+            attacks,
+            benign,
+            totalAttacks,
+            totalBenign
+        };
+    }
+
+    function refreshFlowChart() {
+        if (!myChart) return;
+        const timeline = buildThreatTimeline(10);
+        const totalFlows = timeline.totalAttacks + timeline.totalBenign;
+        if (!totalFlows) {
+            myChart.data.labels = ["No activity"];
+            myChart.data.datasets[0].data = [0];
+            myChart.data.datasets[1].data = [0];
+            myChart.update();
+            updateChartSubtitle("No captured flow activity in the last 10 minutes.");
+            return;
+        }
+
+        myChart.data.labels = timeline.labels;
+        myChart.data.datasets[0].data = timeline.attacks;
+        myChart.data.datasets[1].data = timeline.benign;
+        myChart.update();
+
+        const attackRate = ((timeline.totalAttacks / totalFlows) * 100).toFixed(1);
+        updateChartSubtitle(
+            `Last 10 min: ${timeline.totalAttacks} attacks, ${timeline.totalBenign} benign (${attackRate}% attack rate)`
+        );
+    }
+
     // Initialize Chart.js
     var myChart = new Chart(ctx, {
-        type: 'bar',
+        type: 'line',
         data: {
-            labels: [],
+            labels: ["No activity"],
             datasets: [{
-                label: 'Flow Count',
-                data: [],
-                backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                borderColor: 'rgba(75, 192, 192, 1)',
-                borderWidth: 1
+                label: 'Attacks',
+                data: [0],
+                borderColor: '#ef4444',
+                backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                pointBackgroundColor: '#ef4444',
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                borderWidth: 2.5,
+                fill: true,
+                tension: 0.35
+            }, {
+                label: 'Benign',
+                data: [0],
+                borderColor: '#22c55e',
+                backgroundColor: 'rgba(34, 197, 94, 0.10)',
+                pointBackgroundColor: '#22c55e',
+                pointRadius: 3,
+                pointHoverRadius: 5,
+                borderWidth: 2.5,
+                fill: true,
+                tension: 0.35
             }]
         },
         options: {
-            legend: { display: false },
+            maintainAspectRatio: false,
+            legend: {
+                display: true,
+                position: 'top'
+            },
+            animation: {
+                duration: 400
+            },
+            tooltips: {
+                mode: 'index',
+                intersect: false,
+                callbacks: {
+                    label: function(tooltipItem) {
+                        return ` ${tooltipItem.datasetLabel}: ${tooltipItem.yLabel}`;
+                    }
+                }
+            },
             scales: {
-                yAxes: [{ ticks: { beginAtZero: true } }]
+                xAxes: [{
+                    gridLines: { display: false },
+                    ticks: {
+                        autoSkip: false,
+                        maxRotation: 35,
+                        minRotation: 15,
+                        fontColor: "#334155"
+                    }
+                }],
+                yAxes: [{
+                    ticks: {
+                        beginAtZero: true,
+                        precision: 0,
+                        fontColor: "#334155"
+                    },
+                    gridLines: {
+                        color: "rgba(148, 163, 184, 0.22)"
+                    }
+                }]
             }
         }
     });
@@ -86,14 +243,7 @@ auth.onAuthStateChanged(user => {
                         $("#active-sessions").text(data.active_sessions || 0);
                         $("#current-threats").text(data.threats_last_hour || 0);
                         
-                        // Update chart with new data if available
-                        if (myChart && data.active_sessions) {
-                            // Only update if we don't have more detailed data already
-                            if (myChart.data.datasets[0].data.length <= 1) {
-                                myChart.data.datasets[0].data = [data.active_sessions];
-                                myChart.update();
-                            }
-                        }
+                        // Chart is driven by captured flow timeline, not session count snapshot.
                     }
                 } catch (error) {
                     console.error("Error processing realtime stats:", error);
@@ -269,7 +419,11 @@ $(document).on('click', '#logout-button', function(e) {
     // Clear local storage first
     if (clearAllFlowStorage()) {
         // Then sign out from Firebase
-        firebase.auth().signOut().then(() => {
+        if (!auth) {
+            window.location.href = '/logout';
+            return;
+        }
+        auth.signOut().then(() => {
             // Optionally call server-side cleanup
             fetch('/clear-local-flows')
                 .then(response => response.json())
@@ -316,16 +470,8 @@ $(document).on('click', '#logout-button', function(e) {
             // Check risk level and notify
             checkRiskLevel(msg.risk_level, msg.result);
 
-            // Update chart
-            var chartLabels = [];
-            var chartData = [];
-            for (var i = 0; i < msg.ips.length; i++) {
-                chartLabels.push(msg.ips[i].SourceIP);
-                chartData.push(msg.ips[i].count);
-            }
-            myChart.data.labels = chartLabels;
-            myChart.data.datasets[0].data = chartData;
-            myChart.update();
+            // Update chart based on all captured rows for stable visualization.
+            refreshFlowChart();
             
             // Debug information
             console.log("Received classification:", msg.classification);
@@ -493,6 +639,7 @@ $(document).on('click', '#logout-button', function(e) {
     
     // Initialize filtered count on page load
     setTimeout(updateFilteredCount, 1000);
+    setTimeout(refreshFlowChart, 1000);
 
     // Improve error handling for Firebase operations
     function handleFirebaseError(error, context) {
@@ -512,10 +659,21 @@ $(document).on('click', '#logout-button', function(e) {
 });
 
 
+function getCurrentUserId() {
+    try {
+        if (typeof firebase !== "undefined" && firebase.apps && firebase.apps.length) {
+            return firebase.auth().currentUser?.uid || 'anonymous';
+        }
+    } catch (e) {
+        console.warn("Unable to read Firebase user id:", e);
+    }
+    return 'anonymous';
+}
+
 // Function to save flow data to localStorage with user scope
 function saveFlowsToLocal() {
     try {
-        const userId = firebase.auth().currentUser?.uid || 'anonymous';
+        const userId = getCurrentUserId();
         const key = `rnids_flows_${userId}`;
         localStorage.setItem(key, JSON.stringify(messages_received));
         console.log(`Saved ${messages_received.length} flows to local storage for user ${userId}`);
@@ -531,7 +689,7 @@ function clearAllFlowStorage() {
         localStorage.removeItem('rnids_flows');
         
         // Clear user-specific flows if exists
-        const userId = firebase.auth().currentUser?.uid || 'anonymous';
+        const userId = getCurrentUserId();
         localStorage.removeItem(`rnids_flows_${userId}`);
         
         // Clear in-memory storage
@@ -552,7 +710,7 @@ function clearAllFlowStorage() {
 // Function to load flow data from localStorage with user scope
 function loadFlowsFromLocal() {
     try {
-        const userId = firebase.auth().currentUser?.uid || 'anonymous';
+        const userId = getCurrentUserId();
         const key = `rnids_flows_${userId}`;
         const savedFlows = localStorage.getItem(key);
         
@@ -571,7 +729,7 @@ function loadFlowsFromLocal() {
 // Add this new function to clear flows for the current user
 function clearUserFlows() {
     try {
-        const userId = firebase.auth().currentUser?.uid || 'anonymous';
+        const userId = getCurrentUserId();
         const key = `rnids_flows_${userId}`;
         localStorage.removeItem(key);
         console.log(`Cleared flows for user ${userId}`);

@@ -14,7 +14,7 @@ from firebase_admin.firestore import SERVER_TIMESTAMP
 from datetime import datetime, timedelta
 from firebase_config import (
     firestore_db, create_user_session, update_global_stats, 
-    hash_password, verify_password, get_user_by_username,save_malicious_flow, increment_high_risk_count
+    hash_password, verify_password, get_user_by_username, save_captured_flow, save_malicious_flow, increment_high_risk_count
 )
 from scapy.sendrecv import sniff
 
@@ -41,6 +41,7 @@ from lime import lime_tabular
 import dill
 
 import joblib
+import sklearn.tree._tree as _skl_tree
 
 import plotly
 import plotly.graph_objs
@@ -195,10 +196,29 @@ src_ip_dict = {}
 current_flows = {}
 FlowTimeout = 600
 
+# RandomForest in model.pkl was saved with scikit-learn <1.3 (no missing_go_to_left on tree nodes)
+_orig_node_check = _skl_tree._check_node_ndarray
+
+def _rnids_node_ndarray_check(node_ndarray, expected_dtype=None, **kwargs):
+    if (
+        node_ndarray is not None
+        and getattr(node_ndarray.dtype, "names", None)
+        and "missing_go_to_left" not in node_ndarray.dtype.names
+    ):
+        if expected_dtype is not None and "missing_go_to_left" in expected_dtype.names:
+            new = np.empty(node_ndarray.shape, dtype=expected_dtype)
+            for n in node_ndarray.dtype.names:
+                new[n] = node_ndarray[n]
+            new["missing_go_to_left"] = 0
+            node_ndarray = new
+    return _orig_node_check(node_ndarray, expected_dtype=expected_dtype, **kwargs)
+
+_skl_tree._check_node_ndarray = _rnids_node_ndarray_check
+
 # Load models
 try:
     ae_scaler = joblib.load("models/preprocess_pipeline_AE_39ft.save")
-    ae_model = keras.models.load_model('models/autoencoder_39ft.hdf5')
+    ae_model = keras.models.load_model('models/autoencoder_39ft.hdf5', compile=False)
     with open('models/model.pkl', 'rb') as f:
         classifier = pickle.load(f)
     with open('models/explainer', 'rb') as f:
@@ -294,10 +314,13 @@ def classify(features):
         # Update the dataframe for local tracking
         flow_df.loc[len(flow_df)] = [flow_count] + record + classification + proba_score + risk
         
-        # FIXED: Improved condition to store flows - either non-benign or high/very high risk
+        # Store all captured flows in a professional structured collection.
+        # Also mirror suspicious/high-risk flows to malicious_flows for SOC-style triage.
+        should_store_all = True
+        # Keep dedicated suspicious/high-risk collection for alert workflows.
         should_store = result[0] != 'Benign' or risk_level in ["very_high", "high"]
         
-        if should_store and session.get('user_id'):
+        if should_store_all and session.get('user_id'):
             try:
                 print(f"🔍 Saving flow #{flow_count} to Firestore: Class={result[0]}, Risk={risk_level}")
                 
@@ -318,26 +341,34 @@ def classify(features):
                 # Get session info
                 user_id = session.get('user_id', 'anonymous')
                 session_id = session.get('session_id', 'default_session')
-                
-                # FIXED: Save to Firestore with proper data
-                flow_id = save_malicious_flow(
+
+                captured_id = save_captured_flow(
                     user_id=user_id,
                     session_id=session_id,
                     flow_data=clean_flow_data
                 )
-                
-                if flow_id:
-                    print(f"✅ Saved malicious flow {flow_id} (Risk: {risk_level}, Class: {result[0]})")
-                    
-                    # FIXED: Also increment the session risk counter directly
-                    # This is a backup in case save_malicious_flow's counter update fails
-                    increment_high_risk_count(session_id, risk_level)
-                    
-                    # Update global stats more frequently for high risk flows
-                    if risk_level in ["high", "very_high"] or flow_count % 3 == 0:
-                        update_global_stats()
+                if captured_id:
+                    print(f"✅ Saved captured flow {captured_id} (Class: {result[0]}, Risk: {risk_level})")
                 else:
-                    print("❌ Failed to save flow to Firestore")
+                    print("❌ Failed to save captured flow to Firestore")
+
+                if should_store:
+                    flow_id = save_malicious_flow(
+                        user_id=user_id,
+                        session_id=session_id,
+                        flow_data=clean_flow_data
+                    )
+                    if flow_id:
+                        print(f"✅ Saved malicious flow {flow_id} (Risk: {risk_level}, Class: {result[0]})")
+
+                        # Keep session risk counters aligned with malicious/high-risk collection.
+                        increment_high_risk_count(session_id, risk_level)
+                    else:
+                        print("❌ Failed to save malicious flow to Firestore")
+
+                # Update global stats periodically and on high-risk entries.
+                if risk_level in ["high", "very_high"] or flow_count % 3 == 0:
+                    update_global_stats()
                 
             except Exception as e:
                 print(f"❌ Firestore save error: {e}")
@@ -911,6 +942,41 @@ def check_session():
     })
 
 
+@app.route('/debug/mock-flow', methods=['POST', 'GET'])
+def debug_mock_flow():
+    """Emit one synthetic flow to validate dashboard rendering/socket path."""
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        risk_level = "high"
+        risk_html = "<p class='risk-badge risk-high'>High</p>"
+        mock_result = [
+            999999,                 # Flow ID
+            "192.168.1.50",         # Src IP
+            "51324",                # Src Port
+            "192.168.1.10",         # Dst IP
+            "5000",                 # Dst Port
+            "TCP",                  # Protocol
+            ts,                     # Flow Start
+            ts,                     # Flow End
+            "python.exe",           # App Name
+            "1234",                 # PID
+            "Suspicious",           # Prediction
+            0.93,                   # Prob
+            risk_html               # Risk badge html
+        ]
+
+        socketio.emit('newresult', {
+            'result': mock_result,
+            'ips': [{'SourceIP': '192.168.1.50', 'count': 1}],
+            'risk_level': risk_level,
+            'classification': "Suspicious"
+        }, namespace='/test')
+
+        return jsonify({"success": True, "message": "Mock flow emitted"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @socketio.on('connect', namespace='/test')
 def test_connect():
     # Need visibility of the global thread object
@@ -949,7 +1015,7 @@ atexit.register(cleanup_on_shutdown)
 
 if __name__ == '__main__':
     try:
-        socketio.run(app)
+        socketio.run(app, allow_unsafe_werkzeug=True)
     except Exception as e:
         print(f"Error starting application: {str(e)}")
         cleanup_on_shutdown()

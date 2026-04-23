@@ -98,6 +98,13 @@ body {
     margin-bottom: 0;
     font-size: 1.5rem;
   }
+
+  .chart-subtitle {
+    margin: 6px 0 0;
+    color: #6b7280;
+    font-size: 0.95rem;
+    font-weight: 500;
+  }
   
   .card-body {
     padding: 20px;
@@ -106,8 +113,11 @@ body {
   /* Chart Section */
   .chart-container {
     position: relative;
-    height: 400px;
+    height: 360px;
     margin: 0 auto;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #ffffff 0%, #f8f9ff 100%);
+    padding: 8px;
   }
   
   #myChart {
