@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Signup | Real-Time NIDS</title>
+  <title>Signup | Beyond Marks AI Academy</title>
 
   <!-- Bootstrap 3 -->
   <link href="{{ url_for('static', filename='css/bootstrap.css') }}" rel="stylesheet">
@@ -36,10 +36,13 @@
       </div>
       <ul class="main-nav">
         <li><a href="{{ url_for('landing') }}" {% if request.endpoint == 'landing' %}class="active"{% endif %}>Home</a></li>
-        <li><a href="{{ url_for('about') }}" {% if request.endpoint == 'about' %}class="active"{% endif %}>About</a></li>
-        <li><a href="{{ url_for('landing') }}#features" {% if 'features' in request.path %}class="active"{% endif %}>Features</a></li>
-        <li><a href="{{ url_for('landing') }}#stats" {% if 'stats' in request.path %}class="active"{% endif %}>Statistics</a></li>
+        {% if session.logged_in %}
+        <li><a href="{{ url_for('capture') }}">Dashboard</a></li>
+        <li><a href="{{ url_for('logout') }}">Logout</a></li>
+        {% else %}
         <li><a href="{{ url_for('landing') }}#login" {% if 'login' in request.path %}class="active"{% endif %}>Login</a></li>
+        <li><a href="{{ url_for('signup') }}" {% if request.endpoint == 'signup' %}class="active"{% endif %}>Signup</a></li>
+        {% endif %}
       </ul>
     </nav>
     <div class="container">
@@ -47,7 +50,7 @@
         <div class="col-md-12">
           <div class="hero-text">
             <h1><span>Create</span><br>Your Account</h1>
-            <h3>Join our Network Intrusion Detection System</h3>
+            <h3>Create your Beyond Marks AI Academy account</h3>
           </div>
         </div>
       </div>
@@ -123,15 +126,14 @@
     <div class="container-fluid">
       <div class="row">
         <div class="col-md-12 text-center">
-          <h1>Real-Time<br><span>Network Intrusion Detection System</span></h1>
+          <h1>Beyond Marks AI Academy<br><span>Network Security Platform</span></h1>
           <div class="footer-links">
             <a href="{{ url_for('landing') }}">Home</a>
-            <a href="{{ url_for('capture') }}">NIDS</a>
-            <a href="#features">Features</a>
-            <a href="#stats">Statistics</a>
+            <a href="{{ url_for('capture') }}">Dashboard</a>
             <a href="#login">Login</a>
+            <a href="{{ url_for('signup') }}">Signup</a>
           </div>
-          <p>&copy; 2025 RNIDS. All rights reserved.</p>
+          <p>&copy; 2026 Beyond Marks AI Academy. All rights reserved.</p>
         </div>
       </div>
     </div>

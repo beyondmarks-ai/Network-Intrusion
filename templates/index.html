@@ -1,10 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>RNIDS Dashboard</title>
+  <title>Beyond Marks AI Academy Dashboard</title>
 
   <!-- Bootstrap 3 -->
   <link href="{{ url_for('static', filename='css/bootstrap.css') }}" rel="stylesheet">
@@ -34,20 +34,17 @@
           <span class="icon-bar"></span>
         </button>
         <a class="navbar-brand" href="{{ url_for('landing') }}">
-          <span class="brand-text">RNIDS</span>
+          <span class="brand-text">Beyond Marks AI Academy</span>
         </a>
       </div>
       <div class="collapse navbar-collapse" id="navbar">
         <ul class="nav navbar-nav">
           <li><a href="{{ url_for('landing') }}">Home</a></li>
           <li class="active"><a href="{{ url_for('capture') }}">Dashboard</a></li>
-          <li><a href="{{ url_for('profile') }}"><i class="fas fa-user me-1"></i> Profile</a></li>
-          <li>
-            <a href="#notifications" id="notifications-link">
-              <i class="fas fa-bell"></i>
-              <span id="notification-badge" class="notification-badge" style="display: none;"></span>
-            </a>
-          </li>
+          {% if not session.logged_in %}
+          <li><a href="{{ url_for('landing') }}#login">Login</a></li>
+          <li><a href="{{ url_for('signup') }}">Signup</a></li>
+          {% endif %}
         </ul>
         <ul class="nav navbar-nav navbar-right">
           <li><a href="{{ url_for('logout') }}"><i class="fas fa-sign-out-alt me-1"></i> Logout</a></li>
